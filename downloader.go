@@ -39,6 +39,34 @@ func (d *Downloader) Donload(strURL, filename string) error {
 	return d.singleDownload(strURL, filename)
 }
 
+func (d *Downloader) singleDownload(strURL, filename string) error {
+	if filename == "" {
+		filename = path.Base(strURL)
+	}
+
+	resp, err := http.Get(strURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	destFile, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	bar := progressbar.DefaultBytes(-1, "downloading")
+	_, err = io.Copy(io.MultiWriter(destFile, bar), resp.Body)
+	if err != nil {
+		return err
+	}
+
+	bar.Finish()
+	return nil
+
+}
+
 func (d *Downloader) multiDownload(strURL, filename string, contentLen int) error {
 	partSize := contentLen / d.concurrency
 
@@ -50,19 +78,8 @@ func (d *Downloader) multiDownload(strURL, filename string, contentLen int) erro
 	wg.Add(d.concurrency)
 
 	rangeStart := 0
-	bar := progressbar.NewOptions(d.concurrency,
-		progressbar.OptionEnableColorCodes(true),
-		progressbar.OptionShowBytes(true),
-		progressbar.OptionSetWidth(15),
-		progressbar.OptionSetDescription("downloading..."),
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "[green]=[reset]",
-			SaucerHead:    "[green]>[reset]",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}))
 	for i := 0; i < d.concurrency; i++ {
+		bar := progressbar.DefaultBytes(-1, fmt.Sprintf("downloading part %d", i))
 		go func(i, rangeStart int) {
 			defer wg.Done()
 			rangeEnd := rangeStart + partSize
@@ -70,7 +87,7 @@ func (d *Downloader) multiDownload(strURL, filename string, contentLen int) erro
 				rangeEnd = contentLen
 			}
 			d.downloadPartial(strURL, filename, rangeStart, rangeEnd, i)
-
+			bar.Finish()
 		}(i, rangeStart)
 		rangeStart += partSize + 1
 
@@ -79,10 +96,6 @@ func (d *Downloader) multiDownload(strURL, filename string, contentLen int) erro
 	}
 	wg.Wait()
 	d.merge(filename, contentLen)
-	return nil
-}
-
-func (d *Downloader) singleDownload(strURL, filename string) error {
 	return nil
 }
 
@@ -108,7 +121,6 @@ func (d *Downloader) downloadPartial(strURL, filename string, rangeStart, rangeE
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer partFile.Close()
 
 	buf := make([]byte, 32*1024)
@@ -119,7 +131,6 @@ func (d *Downloader) downloadPartial(strURL, filename string, rangeStart, rangeE
 		}
 		log.Fatal(err)
 	}
-
 }
 
 func (d *Downloader) getPartDir(filename string) string {
@@ -138,6 +149,7 @@ func (d *Downloader) merge(filename string, contentLen int) error {
 	}
 	defer destFile.Close()
 
+	bar := progressbar.DefaultBytes(int64(d.concurrency), "merging...")
 	for i := 0; i < d.concurrency; i++ {
 		partFileName := d.getPartFilename(filename, i)
 		partFile, err := os.Open(partFileName)
@@ -147,6 +159,7 @@ func (d *Downloader) merge(filename string, contentLen int) error {
 		io.Copy(destFile, partFile)
 		partFile.Close()
 		os.Remove(partFileName)
+		bar.Add(1)
 	}
 	return nil
 }
